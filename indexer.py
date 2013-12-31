@@ -2,20 +2,19 @@ import codecs
 import os
 from os.path import basename, splitext, join, abspath
 import re
-import sh
+import subprocess
 
 from whoosh import index
 
 from whoosh.fields import Schema, TEXT, KEYWORD, ID, STORED, DATETIME
 from whoosh.analysis import StemmingAnalyzer, SimpleAnalyzer
 
+from config import ROOT, SRC, DATA
+
 SCHEMA = Schema(id     = ID(stored=True),
                 path   = ID(stored=True),
                 source = ID(stored=True),
                 body   = TEXT(analyzer=SimpleAnalyzer()))
-
-ROOT = 'data'
-SRC = 'static/sources'
 
 u = unicode
 
@@ -25,23 +24,28 @@ def fileid(filepath):
 
 def extract_text_from_pdf(filepath):
     target = fileid(filepath)
-    sh.pdftotext(filepath, join(ROOT, target + ".txt"))
-    with codecs.open(join(ROOT, target + ".txt")) as infile:
+    subprocess.call(['/usr/local/bin/pdftotext', filepath, join(DATA, target + ".txt")])
+    with codecs.open(join(DATA, target + ".txt")) as infile:
         return infile.read()
 
 if __name__ == '__main__':
-    if not os.path.exists('index'):
-        os.mkdir('index')
+    if not os.path.exists(os.path.join(ROOT, 'index')):
+        os.mkdir(os.path.join(ROOT, 'index'))
+        ix = index.create_in(os.path.join(ROOT, 'index'), schema = SCHEMA, indexname="pdfs")
 
-    ix = index.create_in('index', schema = SCHEMA, indexname="pdfs")
-    ix = index.open_dir('index', indexname="pdfs")
+    if not os.path.exists(DATA):
+        os.mkdir(DATA)
+
+    if not os.path.exists(SRC):
+        os.mkdir(SRC)        
+
+    ix = index.open_dir(os.path.join(ROOT, 'index'), indexname="pdfs")
     writer = ix.writer()
-
-    indexed = set(map(fileid, os.listdir(ROOT)))
+    indexed = set(map(fileid, os.listdir(DATA)))
     for filename in os.listdir(SRC):
         if fileid(filename) not in indexed and filename.endswith(".pdf"):
             filesrc = abspath(join(SRC, filename))
-            filetarget = abspath(join(ROOT, fileid(filename) + ".txt"))
+            filetarget = abspath(join(DATA, fileid(filename) + ".txt"))
             try:
                 writer.add_document(id   = u(fileid(filesrc)), 
                                     path = u(filetarget),
