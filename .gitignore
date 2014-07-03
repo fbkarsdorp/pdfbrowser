@@ -1,0 +1,4 @@
+*.pyc
+data/
+index/
+static/sources/
