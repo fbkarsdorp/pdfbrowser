@@ -9,7 +9,7 @@ from whoosh import index
 from whoosh.fields import Schema, TEXT, KEYWORD, ID, STORED, DATETIME
 from whoosh.analysis import StemmingAnalyzer, SimpleAnalyzer
 
-from config import ROOT, SRC, DATA
+from config import ROOT, SRC, DATA, PDFTOTEXT_PATH
 
 SCHEMA = Schema(id     = ID(stored=True),
                 path   = ID(stored=True),
@@ -24,7 +24,7 @@ def fileid(filepath):
 
 def extract_text_from_pdf(filepath):
     target = fileid(filepath)
-    subprocess.call(['/usr/local/bin/pdftotext', filepath, join(DATA, target + ".txt")])
+    subprocess.call([PDFTOTEXT_PATH, filepath, join(DATA, target + ".txt")])
     with codecs.open(join(DATA, target + ".txt")) as infile:
         return infile.read()
 
