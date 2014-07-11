@@ -1,56 +1,112 @@
-import codecs
+import configparser
+import glob
 import os
-from os.path import basename, splitext, join, abspath
-import re
+import shutil
 import subprocess
+import sys
 
-from whoosh import index
+from os.path import splitext, basename
 
-from whoosh.fields import Schema, TEXT, KEYWORD, ID, STORED, DATETIME
-from whoosh.analysis import StemmingAnalyzer, SimpleAnalyzer
+from whoosh.fields import Schema
+from whoosh.fields import ID, KEYWORD, TEXT
+from whoosh.index import create_in, open_dir
 
-from config import ROOT, SRC, DATA, PDFTOTEXT_PATH
+from bs4 import BeautifulSoup
 
-SCHEMA = Schema(id     = ID(stored=True),
-                path   = ID(stored=True),
-                source = ID(stored=True),
-                body   = TEXT(analyzer=SimpleAnalyzer()))
 
-u = unicode
+pdf_schema = Schema(id = ID(unique=True, stored=True),
+                    path = ID(stored=True),
+                    source = ID(stored=True),
+                    author = TEXT(stored=True),
+                    title = TEXT(stored=True),
+                    text = TEXT)
+
 
 def fileid(filepath):
-    base, ext = splitext(basename(filepath))
+    """
+    Return the basename of a file without its extension.
+    >>> fileid('/some/path/to/a/file.pdf')
+    file
+    """
+    base, _ = splitext(basename(filepath))
     return base
 
-def extract_text_from_pdf(filepath):
-    target = fileid(filepath)
-    subprocess.call([PDFTOTEXT_PATH, filepath, join(DATA, target + ".txt")])
-    with codecs.open(join(DATA, target + ".txt")) as infile:
-        return infile.read()
+
+def parse_html(filename):
+    """Extract the Author, Title and Text from a HTML file
+    which was produced by pdftotext with the option -htmlmeta."""
+    with open(filename) as infile:
+        html = BeautifulSoup(infile, "html.parser", from_encoding='utf-8')
+        d = {'text': html.pre.text}
+        if html.title is not None:
+            d['title'] = html.title.text
+        for meta in html.findAll('meta'):
+            if 'name' in meta and meta['name'] in ('Author', 'Title'):
+                d[meta['name'].lower()] = meta['content']
+        return d
+
+
+def pdftotext(pdf, outdir='.', sourcedir='source', p2t='pdftotext', action='copy'):
+    """Convert a pdf to a text file. Extract the Author and Title
+    and return a dictionary consisting of the author, title, text
+    the source path, the path of the converted text file and the
+    file ID."""
+    filename = fileid(pdf)
+    htmlpath = os.path.join(outdir, filename + '.html')
+    txtpath = os.path.join(outdir, filename + '.txt')
+    sourcepath = os.path.join(sourcedir, filename + '.pdf')
+    subprocess.call([p2t, '-enc', 'UTF-8', '-htmlmeta', pdf, htmlpath])
+    data = parse_html(htmlpath)
+    os.remove(htmlpath)
+    file_action = (shutil.move if action == 'move' else 
+                   shutil.copy if action == 'copy' else
+                   os.link     if action == 'link' else None)
+    if file_action is None:
+        raise ValueError
+    file_action(pdf, sourcepath)
+    with open(txtpath, 'w') as outfile:
+        outfile.write(data['text'])
+    data['source'] = sourcepath
+    data['path'] = txtpath
+    data['id'] = fileid(pdf)
+    return data
+
+
+def index_collection(configpath):
+    "Main routine to index a collection of PDFs using Whoosh."
+    config = configparser.ConfigParser()
+    config.read(configpath)
+    recompile = config.getboolean("indexer.options", "recompile")
+    # check whether the supplied index directory already exists
+    if not os.path.exists(config.get("filepaths", "index directory")):
+        # if not, create a new directory and initialize the index
+        os.mkdir(config.get("filepaths", "index directory"))
+        index = create_in(config.get("filepaths", "index directory"), schema=pdf_schema)
+        recompile = True
+    # open a connection to the index
+    index = open_dir(config.get("filepaths", "index directory"))
+    # retrieve a set of all file IDs we already indexed
+    indexed = set(map(fileid, os.listdir(config.get("filepaths", "txt directory"))))
+    # initialize a IndexWriter object
+    writer = index.writer()
+    for directory in config.get("filepaths", "pdf directory").split(';'):
+        for filepath in glob.glob(directory + "/*.pdf"):
+            print(filepath)
+            # poor man's solution to check whether we already indexed this pdf
+            if fileid(filepath) not in indexed or recompile:
+                try:
+                    data = pdftotext(
+                        filepath,
+                        outdir=config.get("filepaths", "txt directory"),
+                        sourcedir=config.get("filepaths", "source directory"),
+                        p2t=config.get('programpaths', 'pdftotext'),
+                        action=config.get("indexer.options", "action"))
+                    writer.add_document(**data)
+                except (IOError, UnicodeDecodeError) as error:
+                    print(error)
+                    continue
+    # commit out changes
+    writer.commit()
 
 if __name__ == '__main__':
-    if not os.path.exists(os.path.join(ROOT, 'index')):
-        os.mkdir(os.path.join(ROOT, 'index'))
-        ix = index.create_in(os.path.join(ROOT, 'index'), schema = SCHEMA, indexname="pdfs")
-
-    if not os.path.exists(DATA):
-        os.mkdir(DATA)
-
-    if not os.path.exists(SRC):
-        os.mkdir(SRC)        
-
-    ix = index.open_dir(os.path.join(ROOT, 'index'), indexname="pdfs")
-    writer = ix.writer()
-    indexed = set(map(fileid, os.listdir(DATA)))
-    for filename in os.listdir(SRC):
-        if fileid(filename) not in indexed and filename.endswith(".pdf"):
-            filesrc = abspath(join(SRC, filename))
-            filetarget = abspath(join(DATA, fileid(filename) + ".txt"))
-            try:
-                writer.add_document(id   = u(fileid(filesrc)), 
-                                    path = u(filetarget),
-                                    source = u(filesrc),
-                                    body = u(extract_text_from_pdf(filesrc), 'latin-1'))
-            except (UnicodeDecodeError, IOError):
-                print filename
-    writer.commit()
+    index_collection(sys.argv[1])
