@@ -1,4 +1,4 @@
 #! /bin/bash
 
-python collect.py
+source activate py34
 python indexer.py

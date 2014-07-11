@@ -1,45 +1,57 @@
-import codecs
-from os.path import splitext, basename, join
-from flask import Flask, request, jsonify, make_response, render_template
-import whoosh
-from whoosh import index
-from whoosh import qparser
+import configparser
+
+from flask import Flask, request, jsonify, render_template
+
+from whoosh.index import open_dir
+from whoosh.qparser import QueryParser
+
+config = configparser.ConfigParser()
+config.read("pydf.ini")
+
 
 def search(query):
-    ix = whoosh.index.open_dir('index', indexname="pdfs")
-    with ix.searcher() as searcher:
+    index = open_dir(config.get("filepaths", "index directory"))
+    query = QueryParser("text", index.schema).parse(query)
+    with index.searcher() as searcher:
+        results = searcher.search(
+            query, limit=config.getint("indexer.options", "search limit"), terms=True)
+        results.fragmenter.maxchars = 300
+        results.fragmenter.surround = 50
+        for hit in results:
+            result = dict(hit)
+            with open(result['path']) as infile:
+                result['snippet'] = hit.highlights("text", infile.read(), top=3)
+            yield result
 
-        def _search(query):
-            query = qparser.QueryParser("body", ix.schema).parse(query)
-            return searcher.search(query, limit=20)
 
-        def htmlize(hits):
-            html = ''
-            for hit in hits:
-                fileid = hit['id']
-                filesource = join("static/sources", basename(hit['source']))
-                filepath = hit['path']
-                with codecs.open(splitext(filepath)[0] + ".txt", encoding='latin-1') as fileobj:
-                    filecontents = fileobj.read()
-                html += "<div id='match'><span id='idee'><a href='%s' target='_blank'>%s</a></span></br><span id='text'>%s</span></div>" % (
-                    filesource, fileid, hit.highlights("body", text=filecontents))
-            return html
-
-        return htmlize(_search(query))
-
+def to_html(result):
+    "Return a representation of a search result in HTML."
+    title = result['title'] if 'title' in result else result['id']
+    author = result['author'] if 'author' in result else ''
+    html = """<div id='match'>
+                 <span id='id'>
+                    <a href='%s' target='_blank'>%s</a>
+                 </span>
+                 </br>
+                 <span id='author'>%s</span>
+                 </br>
+                 <span id='text'>%s</span>
+              </div>
+           """ % (result['source'], title, author, result['snippet'])
+    return html
 
 
 app = Flask(__name__)
 
-@app.route('/api', methods=['GET', 'POST'])
-def api():
-    return jsonify({'html': search(request.form['q'].strip())})
+@app.route('/searchbox', methods=['GET', 'POST'])
+def searchbox():
+    query = request.form['q'].strip()
+    html_results = '\n'.join(map(to_html, search(query)))
+    return jsonify({'html': html_results})
 
 @app.route('/')
 def index():
-    return render_template('index.html', title='PDF viewer')
+    return render_template('index.html')
 
 if __name__ == '__main__':
-    app.run(debug=True,host='localhost',port=8000,use_reloader=True,threaded=True)
-
-
+    app.run(debug=True, host='localhost', port=8000, use_reloader=True, threaded=True)
