@@ -41,8 +41,11 @@ def parse_html(filename):
         if html.title is not None:
             d['title'] = html.title.text
         for meta in html.findAll('meta'):
-            if 'name' in meta and meta['name'] in ('Author', 'Title'):
-                d[meta['name'].lower()] = meta['content']
+            try:
+                if meta['name'] in ('Author', 'Title'):
+                    d[meta['name'].lower()] = meta['content']
+            except KeyError:
+                continue
         return d
 
 
